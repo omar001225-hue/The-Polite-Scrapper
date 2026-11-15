@@ -22,28 +22,45 @@ class FetchError(Exception):
 # function will fetch the url and , check if there is already a cache file , if it does it exists , it will print the lenght of the text in it as a response 
 # if not , it will fetch the text again from the site , and then produce the same response 
 
-def fetch(url , cache_file):
+STATS = {"pages_fetched": 0, "cache_hits": 0}
 
+
+class FetchError(Exception):
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status          # lets us tell a 404 from a 500
+
+
+def fetch(url, cache_file):
     cache_file = Path(cache_file)
-
     if cache_file.exists():
-
         html = cache_file.read_text(encoding="utf-8")
-        print(f"Cache Hit : {url} ({len(html)} chars)")
+        STATS["cache_hits"] += 1
+        print(f"CACHE HIT {url} ({len(html)} chars)")
         return html
-
-    resp = requests.get(url , headers=Header ,timeout= 10)  # Get request at the URL , with out introduction header , and a timeout condition for waiting 
-    
-    if resp.status_code != 200 :
-        raise FetchError(f"{url} -> {resp.status_code}")
-
+    resp = requests.get(url, headers=HEADERS, timeout=10)
+    time.sleep(0.6)                   # polite delay after every real request
+    if resp.status_code != 200:
+        raise FetchError(f"{url} -> {resp.status_code}", status=resp.status_code)
     html = resp.content.decode("utf-8")
-
-    cache_file.parent.mkdir(exist_ok=True)
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
     cache_file.write_text(html, encoding="utf-8")
+    STATS["pages_fetched"] += 1
+    print(f"FETCH {url} ({len(html)} chars)")
+    return html
 
-    print(f"Fetched {url} ({len(html)} chars)")
-    return html 
+
+def fetch_with_retry(url, cache_file):
+    try:
+        return fetch(url, cache_file)
+    except (requests.Timeout, requests.ConnectionError):
+        pass                                      # retryable, fall through
+    except FetchError as e:
+        if e.status is None or e.status < 500:    # 404, 403, etc: do NOT retry
+            raise
+    print(f"RETRY {url}")
+    time.sleep(2)
+    return fetch(url, cache_file)                 # one more try, errors now propagate
 
 
 # stage 2 function 
@@ -132,28 +149,28 @@ def normalize(raw):
 
 
 
-
-
-
 if __name__ == "__main__":
+    start = datetime.now(timezone.utc)
+    t0 = time.perf_counter()
+
     pages, discovered, unique_pairs = discover("https://books.toscrape.com/catalogue/page-1.html")
     print(f"catalogue_pages={pages}, discovered={discovered}, unique_urls={len(unique_pairs)}")
 
+    # Removed TEMPORARY failure test: remove this line after proving it works
+
     raw_records = []
+    failed = []
     for i, (book_url, source_page) in enumerate(unique_pairs, start=1):
-        cache_file = f"cache/book-{i}.html"
-        was_cached = Path(cache_file).exists()
-        html = fetch(book_url, cache_file)
-        if not was_cached:
-            time.sleep(0.6)
-        raw_records.append(extract(html, book_url, source_page))
+        try:
+            html = fetch_with_retry(book_url, f"cache/book-{i}.html")
+            raw_records.append(extract(html, book_url, source_page))
+        except Exception as e:
+            print(f"FAILED {book_url}: {e}")
+            failed.append({"url": book_url, "reason": str(e)})
 
     print(f"detail_pages={len(raw_records)}")
-    print(raw_records[0])
 
-
-        # Stage 4: normalize, validate, store
-    good = {}        # key = product_url, so duplicates collapse automatically
+    good = {}
     errors = []
     for raw in raw_records:
         try:
@@ -168,4 +185,14 @@ if __name__ == "__main__":
     Path("output/errors.json").write_text(
         json.dumps(errors, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    print(f"valid={len(good)}, invalid={len(errors)}")
+    report = {
+        "start_time": start.isoformat(),
+        "duration_seconds": round(time.perf_counter() - t0, 2),
+        "pages_fetched": STATS["pages_fetched"],
+        "cache_hits": STATS["cache_hits"],
+        "valid_records": len(good),
+        "invalid_records": len(errors),
+        "failed_pages": len(failed),
+    }
+    Path("output/run-report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(report)

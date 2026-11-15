@@ -8,6 +8,11 @@ from datetime import datetime, timezone
 from bs4 import BeautifulSoup # stage 2 
 from urllib.parse import urljoin # stage 2 
 
+import re, json # stage 4 
+from pydantic import BaseModel, HttpUrl, ValidationError # stage 4 
+from typing import Optional # stage 4 
+
+
 Header = {"User-Agent": "The-Polite-Scrapper (+https://github.com/omar001225-hue/The-Polite-Scrapper)"}  # Obviously , communication is done via JSON type , so we send a header in JSON format , containing our user agent
 
 class FetchError(Exception):
@@ -95,6 +100,38 @@ def extract(html, product_url, source_page):
     }
 
 
+class Book(BaseModel):
+    title: str
+    product_url: HttpUrl
+    price_text: str
+    price_gbp: float
+    availability_text: str
+    rating_text: str
+    description: Optional[str] = None
+    source_page: HttpUrl
+    fetched_at: str
+
+
+def normalize(raw):
+    raw = dict(raw)
+    raw["price_gbp"] = float(re.sub(r"[^\d.]", "", raw["price_text"]))
+    return raw
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -113,3 +150,22 @@ if __name__ == "__main__":
 
     print(f"detail_pages={len(raw_records)}")
     print(raw_records[0])
+
+
+        # Stage 4: normalize, validate, store
+    good = {}        # key = product_url, so duplicates collapse automatically
+    errors = []
+    for raw in raw_records:
+        try:
+            book = Book(**normalize(raw))
+            good[str(book.product_url)] = book.model_dump(mode="json")
+        except (ValidationError, ValueError, KeyError) as e:
+            errors.append({"record": raw, "reason": str(e)})
+
+    Path("output").mkdir(exist_ok=True)
+    Path("output/books.json").write_text(
+        json.dumps(list(good.values()), indent=2, ensure_ascii=False), encoding="utf-8")
+    Path("output/errors.json").write_text(
+        json.dumps(errors, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    print(f"valid={len(good)}, invalid={len(errors)}")

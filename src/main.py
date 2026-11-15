@@ -2,6 +2,9 @@ import requests
 from pathlib import Path 
 import time
 
+from datetime import datetime, timezone
+
+
 from bs4 import BeautifulSoup # stage 2 
 from urllib.parse import urljoin # stage 2 
 
@@ -76,7 +79,20 @@ def discover( start_url ):
     return pages, len(pairs), list(unique.items())
 
 
-
+def extract(html, product_url, source_page):
+    soup = BeautifulSoup(html, "html.parser")
+    product = soup.select_one("div.product_main")
+    desc_header = soup.select_one("#product_description")
+    return {
+        "title": product.h1.get_text(strip=True),
+        "product_url": product_url,
+        "price_text": product.select_one("p.price_color").get_text(strip=True),
+        "availability_text": product.select_one("p.availability").get_text(" ", strip=True),
+        "rating_text": product.select_one("p.star-rating")["class"][1],
+        "description": desc_header.find_next_sibling("p").get_text(strip=True) if desc_header else None,
+        "source_page": source_page,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 
@@ -85,3 +101,15 @@ def discover( start_url ):
 if __name__ == "__main__":
     pages, discovered, unique_pairs = discover("https://books.toscrape.com/catalogue/page-1.html")
     print(f"catalogue_pages={pages}, discovered={discovered}, unique_urls={len(unique_pairs)}")
+
+    raw_records = []
+    for i, (book_url, source_page) in enumerate(unique_pairs, start=1):
+        cache_file = f"cache/book-{i}.html"
+        was_cached = Path(cache_file).exists()
+        html = fetch(book_url, cache_file)
+        if not was_cached:
+            time.sleep(0.6)
+        raw_records.append(extract(html, book_url, source_page))
+
+    print(f"detail_pages={len(raw_records)}")
+    print(raw_records[0])
